@@ -33,7 +33,8 @@ struct Board {
     to_move: bool,
     running: Option<Pos>,
     can_castle: [bool; 4],
-    positions: HashMap<u64, u32>
+    positions: HashMap<u64, u32>,
+    info_eval_count: u64
 }
 
 #[derive(Hash, Eq, PartialEq, Copy, Clone)]
@@ -53,7 +54,7 @@ struct Move {
     from: Pos,
     to: Pos,
     promote: bool,
-    castle_rook: Option<(Piece, Pos, Pos)>,
+    castle_rook: Option<(Pos, Pos)>,
     captured: Option<(Piece, Pos)>,
     running: Option<Pos>,
     was_running: Option<Pos>,
@@ -71,17 +72,17 @@ enum Rating {
 struct MoveTree {
     tree: Tree,
     rating: Rating,
-    score: i64
+    raw_rating: Rating
 }
 
 enum Tree {
-    Node{branches: HashMap<Move, Box<MoveTree>>},
+    Node{branches: Box<HashMap<Move, Box<MoveTree>>>},
+    BareNode{moves: Box<Vec<Move>>},
     Leaf
 }
 
 // Global Options
 
-const MAX_DEPTH: u32 = 4;
 const MAX_CPU_MOVES: i32 = 150;
 
 const DEBUG: bool = false;
@@ -103,7 +104,8 @@ fn initial_board() -> Box<Board> {
         to_move: true,
         running: None,
         can_castle: [true; 4],
-        positions: HashMap::new()
+        positions: HashMap::new(),
+        info_eval_count: 0
     });
     fn init_piece_full(board: &mut [[Option<Piece>; 8]; 8], pieces: &mut HashMap<Piece, Vec<Pos>>, piece: Piece, pos: Pos) -> () {
         board[pos.0][pos.1] = Some(piece);
@@ -189,11 +191,11 @@ fn perform_move(board: &mut Board, m: &Move) -> () {
     board.board[m.from.0][m.from.1] = None;
 
     match m.castle_rook {
-        Some((piece, from, to)) => {
-            for pos in board.pieces.entry(piece).or_default() {
+        Some((from, to)) => {
+            for pos in board.pieces.entry(Piece{piece_type: PieceType::Rook, team: m.piece.team}).or_default() {
                 if *pos == from { *pos = to }
             };
-            board.board[to.0][to.1] = Some(piece);
+            board.board[to.0][to.1] = Some(Piece{piece_type: PieceType::Rook, team: m.piece.team});
             board.board[from.0][from.1] = None;
         },
         None => ()
@@ -228,11 +230,11 @@ fn undo_move(board: &mut Board, m: &Move) -> () {
     }
 
     match m.castle_rook {
-        Some((piece, from, to)) => {
-            for pos in board.pieces.entry(piece).or_default() {
+        Some((from, to)) => {
+            for pos in board.pieces.entry(Piece{piece_type: PieceType::Rook, team: m.piece.team}).or_default() {
                 if *pos == to { *pos = from }
             };
-            board.board[from.0][from.1] = Some(piece);
+            board.board[from.0][from.1] = Some(Piece{piece_type: PieceType::Rook, team: m.piece.team});
             board.board[to.0][to.1] = None;
         },
         None => ()
@@ -317,12 +319,12 @@ fn update_can_castle(pos: &Pos, c: [bool; 4]) -> [bool; 4] {
 fn add_if_no_check(board: &mut Board, moves: &mut Vec<Move>, m: Move) -> () {
     let temp = if DEBUG { Some(board.board.clone()) } else { None };
     perform_move(board, &m);
-    if !is_in_check(&board) {
+    if !is_in_check(&board, !board.to_move) {
         moves.push(m);
     }
     undo_move(board, &m);
     if DEBUG && Some(board.board) != temp {
-        println!("OH NO {} at add_if_no_check", notate_move(&m));
+        panic!("OH NO {} at add_if_no_check", notate_move(&m));
     }
 }
 
@@ -482,13 +484,13 @@ fn gen_castle_moves(board: &mut Board, moves: &mut Vec<Move>) -> () {
     let r = if board.to_move {0} else {7};
     if board.can_castle[if board.to_move {CASTLE_WHITE + KING_SIDE_CASTLE} else {CASTLE_BLACK + KING_SIDE_CASTLE}] {
         match (board.board[r][5], board.board[r][6]) {
-            (None, None) => add_if_no_check(board, moves,
+            (None, None) => if !is_in_check(board, board.to_move) { add_if_no_check(board, moves,
                 Move{
                     piece: Piece{piece_type: PieceType::King, team: board.to_move},
                     from: Pos(r, 4),
                     to: Pos(r, 6),
                     promote: false,
-                    castle_rook: Some((Piece{piece_type: PieceType::Rook, team: board.to_move}, Pos(r, 7), Pos(r,5))),
+                    castle_rook: Some((Pos(r, 7), Pos(r,5))),
                     captured: None,
                     running: None,
                     was_running: board.running,
@@ -496,19 +498,19 @@ fn gen_castle_moves(board: &mut Board, moves: &mut Vec<Move>) -> () {
                     prev_can_castle: board.can_castle,
                     notation_data: MoveNotationData::KSC
                 }
-            ),
+            )},
             _ => ()
         };
     }
-    if board.can_castle[if board.to_move {CASTLE_BLACK + QUEEN_SIDE_CASTLE} else {CASTLE_BLACK + QUEEN_SIDE_CASTLE}] {
+    if board.can_castle[if board.to_move {CASTLE_WHITE + QUEEN_SIDE_CASTLE} else {CASTLE_BLACK + QUEEN_SIDE_CASTLE}] {
         match (board.board[r][1], board.board[r][2], board.board[r][3]) {
-            (None, None, None) => add_if_no_check(board, moves,
+            (None, None, None) => if !is_in_check(board, board.to_move) { add_if_no_check(board, moves,
                 Move{
                     piece: Piece{piece_type: PieceType::King, team: board.to_move},
                     from: Pos(r, 4),
                     to: Pos(r, 2),
                     promote: false,
-                    castle_rook: Some((Piece{piece_type: PieceType::Rook, team: board.to_move}, Pos(r, 0), Pos(r,3))),
+                    castle_rook: Some((Pos(r, 0), Pos(r,3))),
                     captured: None,
                     running: None,
                     was_running: board.running,
@@ -516,7 +518,7 @@ fn gen_castle_moves(board: &mut Board, moves: &mut Vec<Move>) -> () {
                     prev_can_castle: board.can_castle,
                     notation_data: MoveNotationData::QSC
                 }
-            ),
+            )},
             _ => ()
         };
     }
@@ -551,11 +553,11 @@ fn gen_line_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos, (r_dir, f
 
 // Check Detection
 
-fn is_in_check(board: &Board) -> bool {
-    if board.pieces[&Piece{piece_type: PieceType::King, team: board.to_move}].len() == 0 {
+fn is_in_check(board: &Board, team: bool) -> bool {
+    if DEBUG && board.pieces[&Piece{piece_type: PieceType::King, team: team}].len() == 0 {
         println!("Error: is_in_check: Missing king");
     }
-    let pos = board.pieces[&Piece{piece_type: PieceType::King, team: !board.to_move}][0];
+    let pos = board.pieces[&Piece{piece_type: PieceType::King, team: team}][0];
     let mut check = false;
     for (dx, dy) in [(0, -1), (-1, 0), (0, 1), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1)].iter() {
         let mut r = pos.0 as i32;
@@ -566,10 +568,10 @@ fn is_in_check(board: &Board) -> bool {
             f += dy;
             if r < 0 || r > 7 || f < 0 || f > 7 {break}
             match board.board[r as usize][f as usize] {
-                Some(Piece{piece_type:PieceType::Bishop, team: pteam}) if (board.to_move == pteam) && (dx + dy).abs() % 2 == 0 => {check = true; break}
-                Some(Piece{piece_type:PieceType::Rook, team: pteam}) if (board.to_move == pteam) && (dx + dy).abs() % 2 == 1 => {check = true; break}
-                Some(Piece{piece_type:PieceType::Queen, team: pteam}) if board.to_move == pteam => {check = true; break}
-                Some(Piece{piece_type:PieceType::King, team: pteam}) if (board.to_move == pteam) && first => {check = true; break}
+                Some(Piece{piece_type:PieceType::Bishop, team: pteam}) if (team != pteam) && (dx + dy).abs() % 2 == 0 => {check = true; break}
+                Some(Piece{piece_type:PieceType::Rook, team: pteam}) if (team != pteam) && (dx + dy).abs() % 2 == 1 => {check = true; break}
+                Some(Piece{piece_type:PieceType::Queen, team: pteam}) if team != pteam => {check = true; break}
+                Some(Piece{piece_type:PieceType::King, team: pteam}) if (team != pteam) && first => {check = true; break}
                 None => (),
                 _ => break
             }
@@ -580,7 +582,7 @@ fn is_in_check(board: &Board) -> bool {
         for (x, y) in [(-1, -2), (-2, -1), (1, -2), (-2, 1), (-1, 2), (2, -1), (1, 2), (2, 1)].iter() {
             if pos.0 as i32 + x >= 0 && pos.0 as i32 + x <= 7 && pos.1 as i32 + y >= 0 && pos.1 as i32 + y <= 7 {
                 match board.board[(pos.0 as i32 + x) as usize][(pos.1 as i32 + y) as usize] {
-                    Some(Piece{piece_type: PieceType::Knight, team: pteam}) if board.to_move == pteam => {check = true; break},
+                    Some(Piece{piece_type: PieceType::Knight, team: pteam}) if team != pteam => {check = true; break},
                     _ => ()
                 }
             }
@@ -591,7 +593,7 @@ fn is_in_check(board: &Board) -> bool {
         for (dx, dy) in [(dir, -1), (dir, 1)].iter() {
             if pos.0 as i32 + dx >= 0 && pos.0 as i32 + dx <= 7 && pos.1 as i32 + dy >= 0 && pos.1 as i32 + dy <= 7 {
                 match board.board[(pos.0 as i32 + dx) as usize][(pos.1 as i32 + dy) as usize] {
-                    Some(Piece{piece_type: PieceType::Pawn, team: pteam}) if board.to_move == pteam => {check = true; break},
+                    Some(Piece{piece_type: PieceType::Pawn, team: pteam}) if team != pteam => {check = true; break},
                     _ => ()
                 }
             }
@@ -611,152 +613,166 @@ fn cmp_ratings (r1: &Rating, r2: &Rating) -> bool {
     }
 }
 
-fn evaluate_board(board: &Board) -> i64 {
-    let mut ret = 0;
-    ret += 1 * board.pieces[&Piece{piece_type: PieceType::Pawn, team: true}].len() as i64;
-    ret += -1 * board.pieces[&Piece{piece_type: PieceType::Pawn, team: false}].len() as i64;
-    ret += 3 * board.pieces[&Piece{piece_type: PieceType::Knight, team: true}].len() as i64;
-    ret += -3 * board.pieces[&Piece{piece_type: PieceType::Knight, team: false}].len() as i64;
-    ret += 3 * board.pieces[&Piece{piece_type: PieceType::Bishop, team: true}].len() as i64;
-    ret += -3 * board.pieces[&Piece{piece_type: PieceType::Bishop, team: false}].len() as i64;
-    ret += 5 * board.pieces[&Piece{piece_type: PieceType::Rook, team: true}].len() as i64;
-    ret += -5 * board.pieces[&Piece{piece_type: PieceType::Rook, team: false}].len() as i64;
-    ret += 9 * board.pieces[&Piece{piece_type: PieceType::Queen, team: true}].len() as i64;
-    ret += -9 * board.pieces[&Piece{piece_type: PieceType::Queen, team: false}].len() as i64;
-    ret
+fn join_ratings (raw_rating: &Rating, sub_rating: &Rating) -> Rating {
+    match (raw_rating, sub_rating) {
+        (Rating::Evaluation{score: rs}, Rating::Evaluation{score: ss}) => Rating::Evaluation{score: rs + ss * 10},
+        (Rating::Checkmate{score: b, turns: t}, _) => Rating::Checkmate{score: *b, turns: *t},
+        (_, Rating::Checkmate{score: b, turns: t}) => Rating::Checkmate{score: *b, turns: t + 1}
+    }
 }
 
-fn fill_move_tree(board: &mut Board, move_tree: &mut MoveTree, depth: u32) -> Option<(Rating, Option<Move>)> {
+fn evaluate_board(board: &mut Board) -> (Rating, Box<Vec<Move>>) {
+    if ENGINE_INFO { board.info_eval_count += 1 };
+    let moves = gen_moves(board);
+    let rating = if moves.len() < 1 {
+        if is_in_check(board, board.to_move) {
+            Rating::Checkmate{score: !board.to_move, turns: 0}
+        }
+        else {
+            Rating::Evaluation{score: 0}
+        }
+    }
+    else {
+        let mut ret = 0;
+        ret += 1 * board.pieces[&Piece{piece_type: PieceType::Pawn, team: true}].len() as i64;
+        ret += -1 * board.pieces[&Piece{piece_type: PieceType::Pawn, team: false}].len() as i64;
+        ret += 3 * board.pieces[&Piece{piece_type: PieceType::Knight, team: true}].len() as i64;
+        ret += -3 * board.pieces[&Piece{piece_type: PieceType::Knight, team: false}].len() as i64;
+        ret += 3 * board.pieces[&Piece{piece_type: PieceType::Bishop, team: true}].len() as i64;
+        ret += -3 * board.pieces[&Piece{piece_type: PieceType::Bishop, team: false}].len() as i64;
+        ret += 5 * board.pieces[&Piece{piece_type: PieceType::Rook, team: true}].len() as i64;
+        ret += -5 * board.pieces[&Piece{piece_type: PieceType::Rook, team: false}].len() as i64;
+        ret += 9 * board.pieces[&Piece{piece_type: PieceType::Queen, team: true}].len() as i64;
+        ret += -9 * board.pieces[&Piece{piece_type: PieceType::Queen, team: false}].len() as i64;
+        Rating::Evaluation{score: ret}
+    };
+    (rating, moves)
+}
+
+fn fill_move_tree(board: &mut Board, move_tree: &mut MoveTree, depth: u32) -> (Rating, Option<Move>) {
+    fn simulate_move(board: &mut Board, mt: &mut MoveTree, m: &Move, depth: u32) -> Rating {
+        let temp = if DEBUG { Some(board.board.clone()) } else { None };
+        perform_move(board, m);
+        let h = hash_board(board);
+        increment_position(board, h);
+        let ret = if repitition(board) {
+                mt.rating
+            }
+            else {
+                fill_move_tree(board, mt, depth - 1).0
+            };
+        decrement_position(board, h);
+        undo_move(board, &m);
+        if DEBUG && Some(board.board) != temp {
+            panic!("OH NO {}", notate_move(&m));
+        };
+        ret
+    };
     if depth > 0 {
         match &mut move_tree.tree {
             Tree::Leaf => {
-                let moves = gen_moves(board);
-                if moves.len() < 1 {
-                    if is_in_check(board) {
-                        let r = Rating::Checkmate{score: !board.to_move, turns: MAX_DEPTH - depth};
-                        move_tree.tree = Tree::Node{branches: HashMap::new()};
-                        move_tree.rating = r;
-                        Some((r, None))
-                    }
-                    else {
-                        let r = Rating::Evaluation{score: 0};
-                        move_tree.tree = Tree::Node{branches: HashMap::new()};
-                        move_tree.rating = r;
-                        Some((r, None))
-                    }
-                }
-                else {
-                    move_tree.score = evaluate_board(board);
-                    let mut max_rating = None;
-                    let mut mo: Option<Move> = None;
-                    let mut hm: HashMap<Move, Box<MoveTree>> = HashMap::new();
-                    for m in moves.iter() {
-                        let temp = if DEBUG { Some(board.board.clone()) } else { None };
-                        perform_move(board, &m);
-                        let h = hash_board(board);
-                        increment_position(board, h);
-                        let res =
-                            if repitition(board) {
-                                let r = Rating::Evaluation{score: 0};
-                                hm.insert(*m, Box::new(MoveTree{rating: r, score: 0, tree: Tree::Node{branches: HashMap::new()}}));
-                                Some((r, None))
-                            }
-                            else {
-                                let mut mt = MoveTree{rating: Rating::Evaluation{score: 0}, score: 0, tree: Tree::Leaf};
-                                let ret = fill_move_tree(board, &mut mt, depth - 1);
-                                hm.insert(*m, Box::new(mt));
-                                ret
-                            };
-                        decrement_position(board, h);
-                        undo_move(board, &m);
-                        if DEBUG && Some(board.board) != temp {
-                            println!("OH NO {} at {}", notate_move(&m), depth);
-                        };
-                        match res {
-                            Some((r, _)) => match max_rating {
-                                Some(mr) => if cmp_ratings(&r, &mr) ^ !board.to_move {
-                                    max_rating = Some(r);
-                                    mo = Some(*m);
-                                }
-                                None => {
-                                    max_rating = Some(r);
-                                    mo = Some(*m);
-                                }
-                            },
-                            None => ()
-                        }
-                    };
-                    move_tree.tree = Tree::Node{branches: hm};
-                    match max_rating {
-                        Some(Rating::Evaluation{score: s}) => {
-                            move_tree.rating = Rating::Evaluation{score: move_tree.score + s * 10};
-                            Some((move_tree.rating, mo))
-                        },
-                        Some(r) => {
-                            move_tree.rating = r;
-                            Some((r, mo))
-                        },
-                        None => {
-                            move_tree.rating = Rating::Evaluation{score: move_tree.score};
-                            Some((move_tree.rating, None))
-                        }
-                    }
-                }
-            },
-            Tree::Node{branches: br} => {
-                let mut max_rating = None;
-                let mut mo = None;
-                for (m, mt) in br {
-                    let temp = if DEBUG { Some(board.board.clone()) } else { None };
-                    perform_move(board, &m);
-                    let h = hash_board(board);
-                    increment_position(board, h);
-                    let res = fill_move_tree(board, mt, depth - 1);
-                    decrement_position(board, h);
-                    undo_move(board, &m);
-                    if DEBUG && Some(board.board) != temp {
-                        println!("OH NO2 {} at {}", notate_move(&m), depth);
-                    }
-                    match res {
-                        Some((r, _)) => match max_rating {
-                            Some(mr) => if cmp_ratings(&r, &mr) ^ !board.to_move {
-                                max_rating = Some(r);
+                let mut hm: Box<HashMap<Move, Box<MoveTree>>> = Box::new(HashMap::new());
+                let (raw_rating, moves) = evaluate_board(board);
+                move_tree.raw_rating = raw_rating;
+                let mut it = moves.iter();
+                let ret = match it.next() {
+                    Some(first_move) => {
+                        let mut mo = Some(*first_move);
+                        let mut first_mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
+                        let mut max_rating = simulate_move(board, &mut first_mt, &first_move, depth);
+                        hm.insert(*first_move, first_mt);
+                        for m in it {
+                            let mut mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
+                            let r = simulate_move(board, &mut mt, &m, depth);
+                            hm.insert(*m, mt);
+                            if cmp_ratings(&r, &max_rating) ^ !board.to_move {
+                                max_rating = r;
                                 mo = Some(*m);
                             }
-                            None => {
-                                max_rating = Some(r);
-                                mo = Some(*m);
-                            }
-                        },
-                        None => ()
+                        }
+                        move_tree.rating = join_ratings(&move_tree.raw_rating, &max_rating);
+                        (move_tree.rating, mo)
+                    },
+                    None => {
+                        move_tree.rating = move_tree.raw_rating;
+                        (move_tree.rating, None)
                     }
                 };
-                match max_rating {
-                    Some(Rating::Evaluation{score: s}) => Some((Rating::Evaluation{score: move_tree.score + s * 10}, mo)),
-                    Some(r) => Some((r, mo)),
-                    None => None
+                move_tree.tree = Tree::Node{branches: hm};
+                ret
+            },
+            Tree::BareNode{moves: ms} => {
+                let mut hm: Box<HashMap<Move, Box<MoveTree>>> = Box::new(HashMap::new());
+                let mut it = ms.iter();
+                let ret = match it.next() {
+                    Some(first_move) => {
+                        let mut mo = Some(*first_move);
+                        let mut first_mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
+                        let mut max_rating = simulate_move(board, &mut first_mt, &first_move, depth);
+                        hm.insert(*first_move, first_mt);
+                        for m in it {
+                            let mut mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
+                            let r = simulate_move(board, &mut mt, &m, depth);
+                            hm.insert(*m, mt);
+                            if cmp_ratings(&r, &max_rating) ^ !board.to_move {
+                                max_rating = r;
+                                mo = Some(*m);
+                            }
+                        }
+                        move_tree.rating = join_ratings(&move_tree.raw_rating, &max_rating);
+                        (move_tree.rating, mo)
+                    },
+                    None => {
+                        move_tree.rating = move_tree.raw_rating;
+                        (move_tree.rating, None)
+                    }
+                };
+                move_tree.tree = Tree::Node{branches: hm};
+                ret
+            },
+            Tree::Node{branches: br} => {
+                let mut it = br.iter_mut();
+                match it.next() {
+                    Some((first_move, first_mt)) => {
+                        let mut mo: Option<Move> = Some(first_move.clone());
+                        let mut max_rating = simulate_move(board, first_mt, &first_move, depth);
+                        for (m, mt) in it {
+                            let r = simulate_move(board, mt, &m, depth);
+                            if cmp_ratings(&r, &max_rating) ^ !board.to_move {
+                                max_rating = r;
+                                mo = Some(*m);
+                            }
+                        }
+                        (join_ratings(&move_tree.raw_rating, &max_rating), mo)
+                    },
+                    None => panic!("fill_move_tree: Tree::Node")
                 }
             }
         }
     }
     else {
-        None
+        let rating = match move_tree.tree {
+            Tree::Leaf => {
+                let (rating, moves) = evaluate_board(board);
+                move_tree.rating = rating;
+                move_tree.raw_rating = rating;
+                move_tree.tree = Tree::BareNode{moves: moves};
+                rating
+            },
+            _ => move_tree.raw_rating
+        };
+        (rating, None)
     }
 }
 
 fn adjust_move_tree(move_tree: &mut MoveTree, m: &Move) -> Box<MoveTree> {
     match &mut move_tree.tree {
         Tree::Node{branches: br} => match br.remove(m) {
-            Some(mt) => {
-                mt
-            },
-            _ => {
-                println!("Error: adjust_move_tree: No entry for {}.", notate_move(&m));
-                Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, score: 0, tree: Tree::Leaf})
-            }
+            Some(mt) => mt,
+            _ => panic!("Error: adjust_move_tree: No entry for {}.", notate_move(&m))
         },
-        Tree::Leaf => {
-            Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, score: 0, tree: Tree::Leaf})
+        _ => {
+            Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf})
         }
     }
 }
@@ -781,17 +797,19 @@ fn repitition(board: &Board) -> bool {
 
 // Move Input Methods
 
-fn cpu_move(board: &mut Board, move_tree: &mut MoveTree) -> Move {
+fn cpu_move(board: &mut Board, move_tree: &mut MoveTree, depth: u32) -> Move {
     let now = Instant::now();
-    match fill_move_tree(board, move_tree, MAX_DEPTH) {
-        Some((rating, Some(m))) => {
+    match fill_move_tree(board, move_tree, depth) {
+        (rating, Some(m)) => {
             if ENGINE_INFO {
                 match rating {
                     Rating::Evaluation{score: s} => println!("Evaluated at a {}.", s),
                     Rating::Checkmate{score: s, turns: t} => println!("Evaluated at a mate in {} in favor of {}.", t, if s {"white"} else {"black"})
                 };
                 println!("Took {} seconds to pick a move.", now.elapsed().as_secs_f64());
-            }
+                println!("Evaluated {} new positions.", board.info_eval_count);
+                board.info_eval_count = 0;
+            };
             m
         },
         _ => {
@@ -805,7 +823,7 @@ fn player_move(moves: &Vec<Move>, stdin: std::io::Stdin) -> Move {
     let mut s;
     let ret;
     loop {
-        print!("Player move: ");
+        println!("Player move: ");
         s = String::new();
         stdin.read_line(&mut s).expect("");
         s.pop();
@@ -922,25 +940,37 @@ fn main() {
     use std::io::{stdin, stdout, Write};
     let mut s;
 
-    println!("White is player? 'y' for yes.");
+    println!("Enter white's CPU depth or press enter for player input.");
     let _ = stdout().flush();
     s = String::new();
     stdin().read_line(&mut s).expect("");
     s.pop();
-    let white = s == "y";
+    let white = match s.parse::<u32>() {
+        Ok(i) => Some(i),
+        _ => {
+            println!("White will use player input.");
+            None
+        }
+    };
 
-    println!("Black is player? 'y' for yes.");
+    println!("Enter black's CPU depth or press enter for player input.");
     let _ = stdout().flush();
     s = String::new();
     stdin().read_line(&mut s).expect("");
     s.pop();
-    let black = s == "y";
+    let black = match s.parse::<u32>() {
+        Ok(i) => Some(i),
+        _ => {
+            println!("Black will use player input.");
+            None
+        }
+    };
 
     let mut board = initial_board();
     let mut white_moves = 0;
     let mut black_moves = 0;
     let mut history = Vec::new();
-    let mut move_tree = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, score: 0, tree: Tree::Leaf});
+    let mut move_tree = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
     let h = hash_board(&board);
     increment_position(&mut board, h);
     print_board(&board);
@@ -948,30 +978,32 @@ fn main() {
         let moves = gen_moves(&mut board);
         let m;
         if moves.len() < 1 {
-            if is_in_check(&board) {
+            if is_in_check(&board, true) {
                 println!("Checkmate, black wins.");
             }
             else {
                 println!("Stalemate, draw.");
             }
             break;
-        }
-        if white {
-            m = player_move(&moves, stdin());
-            perform_move(&mut board, &m);
-        }
-        else {
-            if white_moves >= MAX_CPU_MOVES {
-                println!("Max moves exceeded, white resigns. Black wins.");
-                break;
-            }
-            else{
-                m = cpu_move(&mut board, &mut move_tree);
+        };
+        match white {
+            None => {
+                m = player_move(&moves, stdin());
                 perform_move(&mut board, &m);
-                println!("White plays {}.", notate_move(&m));
-                white_moves += 1;
+            },
+            Some(d) => {
+                if white_moves >= MAX_CPU_MOVES {
+                    println!("Max moves exceeded, white resigns. Black wins.");
+                    break;
+                }
+                else{
+                    m = cpu_move(&mut board, &mut move_tree, d);
+                    perform_move(&mut board, &m);
+                    println!("White plays {}.", notate_move(&m));
+                    white_moves += 1;
+                }
             }
-        }
+        };
         print_board(&board);
         history.push(m);
         if repitition(&board) {
@@ -984,7 +1016,7 @@ fn main() {
         let omoves = gen_moves(&mut board);
         let m;
         if omoves.len() < 1 {
-            if is_in_check(&board) {
+            if is_in_check(&board, false) {
                 println!("Checkmate, white wins.");
             }
             else {
@@ -992,20 +1024,22 @@ fn main() {
             }
             break;
         }
-        if black {
-            m = player_move(&omoves, stdin());
-            perform_move(&mut board, &m);
-        }
-        else {
-            if black_moves >= MAX_CPU_MOVES {
-                println!("Max moves exceeded, black resigns. White wins.");
-                break;
-            }
-            else{
-                m = cpu_move(&mut board, &mut move_tree);
+        match black {
+            None => {
+                m = player_move(&omoves, stdin());
                 perform_move(&mut board, &m);
-                println!("Black plays {}.", notate_move(&m));
-                black_moves += 1;
+            },
+            Some(d) => {
+                if black_moves >= MAX_CPU_MOVES {
+                    println!("Max moves exceeded, black resigns. White wins.");
+                    break;
+                }
+                else{
+                    m = cpu_move(&mut board, &mut move_tree, d);
+                    perform_move(&mut board, &m);
+                    println!("Black plays {}.", notate_move(&m));
+                    black_moves += 1;
+                }
             }
         }
         print_board(&board);
