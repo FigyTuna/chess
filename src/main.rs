@@ -4,6 +4,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::time::Instant;
 
 // Data Structures
@@ -69,16 +70,9 @@ enum Rating {
     Checkmate{score: bool, turns: u32}
 }
 
-struct MoveTree {
-    tree: Tree,
-    rating: Rating,
-    raw_rating: Rating
-}
-
-enum Tree {
-    Node{branches: Box<HashMap<Move, Box<MoveTree>>>},
-    BareNode{moves: Box<Vec<Move>>},
-    Leaf
+struct Desc {
+    branches: Box<Vec<Move>>,
+    rating: Rating
 }
 
 // Global Options
@@ -649,130 +643,72 @@ fn evaluate_board(board: &mut Board) -> (Rating, Box<Vec<Move>>) {
     (rating, moves)
 }
 
-fn fill_move_tree(board: &mut Board, move_tree: &mut MoveTree, depth: u32) -> (Rating, Option<Move>) {
-    fn simulate_move(board: &mut Board, mt: &mut MoveTree, m: &Move, depth: u32) -> Rating {
-        let temp = if DEBUG { Some(board.board.clone()) } else { None };
-        perform_move(board, m);
-        let h = hash_board(board);
-        increment_position(board, h);
-        let ret = if repitition(board) {
-                mt.rating
-            }
-            else {
-                fill_move_tree(board, mt, depth - 1).0
-            };
-        decrement_position(board, h);
-        undo_move(board, &m);
-        if DEBUG && Some(board.board) != temp {
-            panic!("OH NO {}", notate_move(&m));
-        };
-        ret
-    };
-    if depth > 0 {
-        match &mut move_tree.tree {
-            Tree::Leaf => {
-                let mut hm: Box<HashMap<Move, Box<MoveTree>>> = Box::new(HashMap::new());
-                let (raw_rating, moves) = evaluate_board(board);
-                move_tree.raw_rating = raw_rating;
-                let mut it = moves.iter();
-                let ret = match it.next() {
-                    Some(first_move) => {
-                        let mut mo = Some(*first_move);
-                        let mut first_mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
-                        let mut max_rating = simulate_move(board, &mut first_mt, &first_move, depth);
-                        hm.insert(*first_move, first_mt);
-                        for m in it {
-                            let mut mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
-                            let r = simulate_move(board, &mut mt, &m, depth);
-                            hm.insert(*m, mt);
-                            if cmp_ratings(&r, &max_rating) ^ !board.to_move {
-                                max_rating = r;
-                                mo = Some(*m);
-                            }
-                        }
-                        move_tree.rating = join_ratings(&move_tree.raw_rating, &max_rating);
-                        (move_tree.rating, mo)
-                    },
-                    None => {
-                        move_tree.rating = move_tree.raw_rating;
-                        (move_tree.rating, None)
-                    }
-                };
-                move_tree.tree = Tree::Node{branches: hm};
-                ret
-            },
-            Tree::BareNode{moves: ms} => {
-                let mut hm: Box<HashMap<Move, Box<MoveTree>>> = Box::new(HashMap::new());
-                let mut it = ms.iter();
-                let ret = match it.next() {
-                    Some(first_move) => {
-                        let mut mo = Some(*first_move);
-                        let mut first_mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
-                        let mut max_rating = simulate_move(board, &mut first_mt, &first_move, depth);
-                        hm.insert(*first_move, first_mt);
-                        for m in it {
-                            let mut mt = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
-                            let r = simulate_move(board, &mut mt, &m, depth);
-                            hm.insert(*m, mt);
-                            if cmp_ratings(&r, &max_rating) ^ !board.to_move {
-                                max_rating = r;
-                                mo = Some(*m);
-                            }
-                        }
-                        move_tree.rating = join_ratings(&move_tree.raw_rating, &max_rating);
-                        (move_tree.rating, mo)
-                    },
-                    None => {
-                        move_tree.rating = move_tree.raw_rating;
-                        (move_tree.rating, None)
-                    }
-                };
-                move_tree.tree = Tree::Node{branches: hm};
-                ret
-            },
-            Tree::Node{branches: br} => {
-                let mut it = br.iter_mut();
-                match it.next() {
-                    Some((first_move, first_mt)) => {
-                        let mut mo: Option<Move> = Some(first_move.clone());
-                        let mut max_rating = simulate_move(board, first_mt, &first_move, depth);
-                        for (m, mt) in it {
-                            let r = simulate_move(board, mt, &m, depth);
-                            if cmp_ratings(&r, &max_rating) ^ !board.to_move {
-                                max_rating = r;
-                                mo = Some(*m);
-                            }
-                        }
-                        (join_ratings(&move_tree.raw_rating, &max_rating), mo)
-                    },
-                    None => panic!("fill_move_tree: Tree::Node")
-                }
-            }
+fn simulate_and_rate_move(board: &mut Board, layers: &mut VecDeque<HashMap<u64, Box<Desc>>>, m: &Move, total_depth:u32, depth: u32) -> Rating {
+    let temp = if DEBUG { Some(board.board.clone()) } else { None };
+    perform_move(board, m);
+    let h = hash_board(board);
+    increment_position(board, h);
+    let ret = if repitition(board) {
+            Rating::Evaluation{score: 0}
         }
-    }
-    else {
-        let rating = match move_tree.tree {
-            Tree::Leaf => {
-                let (rating, moves) = evaluate_board(board);
-                move_tree.rating = rating;
-                move_tree.raw_rating = rating;
-                move_tree.tree = Tree::BareNode{moves: moves};
-                rating
-            },
-            _ => move_tree.raw_rating
+        else {
+            fill_layers(board, h, layers, total_depth, depth - 1)
         };
-        (rating, None)
-    }
+    decrement_position(board, h);
+    undo_move(board, &m);
+    if DEBUG && Some(board.board) != temp {
+        panic!("OH NO {}", notate_move(&m));
+    };
+    ret
 }
 
-fn adjust_move_tree(move_tree: &mut MoveTree, m: &Move) -> Box<MoveTree> {
-    match &mut move_tree.tree {
-        Tree::Node{branches: br} => match br.remove(m) {
-            Some(mt) => mt,
-            _ => panic!("Error: adjust_move_tree: No entry for {}.", notate_move(&m))
-        },
-        _ => {
-            Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf})
+fn fill_layers(board: &mut Board, h: u64, layers: &mut VecDeque<HashMap<u64, Box<Desc>>>, total_depth:u32, depth: u32) -> Rating {
+    let idx = (total_depth - depth - 1) as usize;
+    if depth > 0 {
+        let (raw_rating, moves) = match layers[idx].get(&h) {
+            None => {
+                let (raw_rating, moves) = evaluate_board(board);
+                layers[idx].insert(h, Box::new(Desc{
+                    branches: moves.clone(),
+                    rating: raw_rating
+                }));
+                (raw_rating, moves)
+            },
+            Some(desc) => {
+                (desc.rating, desc.branches.clone())
+            }
+        };
+        let mut it = moves.iter();
+        let rating = match it.next() {
+            Some(first_move) => {
+                let mut max_rating = simulate_and_rate_move(board, layers, &first_move, total_depth, depth);
+                for m in it {
+                    let r = simulate_and_rate_move(board, layers, &m, total_depth, depth);
+                    if cmp_ratings(&r, &max_rating) ^ !board.to_move {
+                        max_rating = r;
+                    }
+                }
+                join_ratings(&raw_rating, &max_rating)
+            },
+            None => {
+                raw_rating
+            }
+        };
+        rating
+    }
+    else {
+        match layers[idx].get(&h) {
+            None => {
+                let (rating, moves) = evaluate_board(board);
+                layers[idx].insert(h, Box::new(Desc{
+                    branches: moves,
+                    rating: rating
+                }));
+                rating
+            },
+            Some(desc) => {
+                desc.rating
+            }
         }
     }
 }
@@ -797,25 +733,41 @@ fn repitition(board: &Board) -> bool {
 
 // Move Input Methods
 
-fn cpu_move(board: &mut Board, move_tree: &mut MoveTree, depth: u32) -> Move {
-    let now = Instant::now();
-    match fill_move_tree(board, move_tree, depth) {
-        (rating, Some(m)) => {
+fn cpu_move(board: &mut Board, moves: &Box<Vec<Move>>, layers: &mut VecDeque<HashMap<u64, Box<Desc>>>, depth: u32) -> Move {
+    let now = if ENGINE_INFO { Some(Instant::now()) } else {None};
+    while (layers.len() as u32) < depth {
+        layers.push_back(HashMap::new());
+    };
+    let mut max_rating = Rating::Checkmate{score: !board.to_move, turns: 0};
+    let mut mo = None;
+    for m in moves.iter() {
+        let r = simulate_and_rate_move(board, layers, m, depth, depth);
+        if cmp_ratings(&r, &max_rating) ^ !board.to_move {
+            max_rating = r;
+            mo = Some(m)
+        }
+    }
+    match mo {
+        Some(m) => {
             if ENGINE_INFO {
-                match rating {
+                println!("Evaluated {} new positions.", board.info_eval_count);
+                println!("Positions at each layer:");
+                for l in layers.iter() {
+                    println!("    {}", l.len());
+                };
+                match now {
+                    Some(now) => println!("Took {} seconds to pick a move.", now.elapsed().as_secs_f64()),
+                    None => ()
+                };
+                match max_rating {
                     Rating::Evaluation{score: s} => println!("Evaluated at a {}.", s),
                     Rating::Checkmate{score: s, turns: t} => println!("Evaluated at a mate in {} in favor of {}.", t, if s {"white"} else {"black"})
                 };
-                println!("Took {} seconds to pick a move.", now.elapsed().as_secs_f64());
-                println!("Evaluated {} new positions.", board.info_eval_count);
                 board.info_eval_count = 0;
             };
-            m
+            *m
         },
-        _ => {
-            println!("Error: cpu_move");
-            basic_move(board, Piece{piece_type: PieceType::Pawn, team: true}, &Pos(8,8), &Pos(8,8), None)
-        }
+        None => panic!("Error: pick_moves: moves list is empty")
     }
 }
 
@@ -970,7 +922,7 @@ fn main() {
     let mut white_moves = 0;
     let mut black_moves = 0;
     let mut history = Vec::new();
-    let mut move_tree = Box::new(MoveTree{rating: Rating::Evaluation{score: 0}, raw_rating: Rating::Evaluation{score: 0}, tree: Tree::Leaf});
+    let mut layers = VecDeque::new();
     let h = hash_board(&board);
     increment_position(&mut board, h);
     print_board(&board);
@@ -997,7 +949,8 @@ fn main() {
                     break;
                 }
                 else{
-                    m = cpu_move(&mut board, &mut move_tree, d);
+                    println!("White is thinking...");
+                    m = cpu_move(&mut board, &moves, &mut layers, d);
                     perform_move(&mut board, &m);
                     println!("White plays {}.", notate_move(&m));
                     white_moves += 1;
@@ -1012,7 +965,7 @@ fn main() {
         }
         let h = hash_board(&board);
         increment_position(&mut board, h);
-        move_tree = adjust_move_tree(&mut move_tree, &m);
+        layers.pop_front();
         let omoves = gen_moves(&mut board);
         let m;
         if omoves.len() < 1 {
@@ -1035,7 +988,8 @@ fn main() {
                     break;
                 }
                 else{
-                    m = cpu_move(&mut board, &mut move_tree, d);
+                    println!("Black is thinking...");
+                    m = cpu_move(&mut board, &omoves, &mut layers, d);
                     perform_move(&mut board, &m);
                     println!("Black plays {}.", notate_move(&m));
                     black_moves += 1;
@@ -1050,10 +1004,11 @@ fn main() {
         }
         let h = hash_board(&board);
         increment_position(&mut board, h);
-        move_tree = adjust_move_tree(&mut move_tree, &m);
+        layers.pop_front();
     }
     println!("Move history:");
     for m in history {
-        println!("{}", notate_move(&m));
+        print!("{}, ", notate_move(&m));
     }
+    println!("Done.");
 }
