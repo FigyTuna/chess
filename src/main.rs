@@ -1,8 +1,6 @@
 
 // Imports
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -34,7 +32,7 @@ struct Board {
     to_move: bool,
     running: Option<Pos>,
     can_castle: [bool; 4],
-    positions: HashMap<u64, u32>,
+    positions: HashMap<[u64;5], u32>,
     info_eval_count: u64
 }
 
@@ -240,12 +238,12 @@ fn undo_move(board: &mut Board, m: &Move) -> () {
     board.to_move = !board.to_move;
 }
 
-fn increment_position(board: &mut Board, h: u64) -> () {
+fn increment_position(board: &mut Board, h: [u64;5]) -> () {
     let n = board.positions.entry(h).or_insert(0);
     *n += 1;
 }
 
-fn decrement_position(board: &mut Board, h: u64) -> () {
+fn decrement_position(board: &mut Board, h: [u64;5]) -> () {
     let n = board.positions.entry(h).or_insert(1);
     *n -= 1;
 }
@@ -643,10 +641,10 @@ fn evaluate_board(board: &mut Board) -> (Rating, Box<Vec<Move>>) {
     (rating, moves)
 }
 
-fn simulate_and_rate_move(board: &mut Board, layers: &mut VecDeque<HashMap<u64, Box<Desc>>>, m: &Move, total_depth:u32, depth: u32) -> Rating {
+fn simulate_and_rate_move(board: &mut Board, layers: &mut VecDeque<HashMap<[u64;5], Box<Desc>>>, m: &Move, total_depth:u32, depth: u32) -> Rating {
     let temp = if DEBUG { Some(board.board.clone()) } else { None };
     perform_move(board, m);
-    let h = hash_board(board);
+    let h = get_signature(board);
     increment_position(board, h);
     let ret = if repitition(board) {
             Rating::Evaluation{score: 0}
@@ -662,7 +660,7 @@ fn simulate_and_rate_move(board: &mut Board, layers: &mut VecDeque<HashMap<u64, 
     ret
 }
 
-fn fill_layers(board: &mut Board, h: u64, layers: &mut VecDeque<HashMap<u64, Box<Desc>>>, total_depth:u32, depth: u32) -> Rating {
+fn fill_layers(board: &mut Board, h: [u64;5], layers: &mut VecDeque<HashMap<[u64;5], Box<Desc>>>, total_depth:u32, depth: u32) -> Rating {
     let idx = (total_depth - depth - 1) as usize;
     if depth > 0 {
         let (raw_rating, moves) = match layers[idx].get(&h) {
@@ -715,17 +713,40 @@ fn fill_layers(board: &mut Board, h: u64, layers: &mut VecDeque<HashMap<u64, Box
 
 // Repitition Detection
 
-fn hash_board(board: &Board) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    board.board.hash(&mut hasher);
-    board.to_move.hash(&mut hasher);
-    board.running.hash(&mut hasher);
-    board.can_castle.hash(&mut hasher);
-    hasher.finish()
+fn get_signature(board: &Board) -> [u64;5] {
+    let mut s = [0; 5];
+    let mut a = 0;
+    let mut i;
+    for r in &board.board {
+        i = 0;
+        for p in r {
+            s[a / 2] += match p {
+                Some(Piece{piece_type: PieceType::Pawn, team: t}) => 1 + if *t {8} else {0},
+                Some(Piece{piece_type: PieceType::Rook, team: t}) => 2 + if *t {8} else {0},
+                Some(Piece{piece_type: PieceType::Bishop, team: t}) => 3 + if *t {8} else {0},
+                Some(Piece{piece_type: PieceType::Knight, team: t}) => 4 + if *t {8} else {0},
+                Some(Piece{piece_type: PieceType::King, team: t}) => 5 + if *t {8} else {0},
+                Some(Piece{piece_type: PieceType::Queen, team: t}) => 6 + if *t {8} else {0},
+                None => 0
+            } << (4 * ((a as u32 % 2) + (2 * i)));
+            i += 1;
+        }
+        a += 1;
+    };
+    s[4] = if board.to_move {1} else {0}
+         + match board.running {
+             Some(pos) => pos.0 as u64 * 2 + pos.1 as u64 * 16,
+             None => 0
+         }
+         + if board.can_castle[0] {128} else {0}
+         + if board.can_castle[1] {256} else {0}
+         + if board.can_castle[2] {512} else {0}
+         + if board.can_castle[3] {1024} else {0};
+    s
 }
 
 fn repitition(board: &Board) -> bool {
-    match board.positions.get(&hash_board(board)) {
+    match board.positions.get(&get_signature(board)) {
         Some(n) => *n >= 2,
         None => false
     }
@@ -733,7 +754,7 @@ fn repitition(board: &Board) -> bool {
 
 // Move Input Methods
 
-fn cpu_move(board: &mut Board, moves: &Box<Vec<Move>>, layers: &mut VecDeque<HashMap<u64, Box<Desc>>>, depth: u32) -> Move {
+fn cpu_move(board: &mut Board, moves: &Box<Vec<Move>>, layers: &mut VecDeque<HashMap<[u64;5], Box<Desc>>>, depth: u32) -> Move {
     let now = if ENGINE_INFO { Some(Instant::now()) } else {None};
     while (layers.len() as u32) < depth {
         layers.push_back(HashMap::new());
@@ -923,7 +944,7 @@ fn main() {
     let mut black_moves = 0;
     let mut history = Vec::new();
     let mut layers = VecDeque::new();
-    let h = hash_board(&board);
+    let h = get_signature(&board);
     increment_position(&mut board, h);
     print_board(&board);
     loop {
@@ -963,7 +984,7 @@ fn main() {
             println!("Threefold repitition, draw.");
             break;
         }
-        let h = hash_board(&board);
+        let h = get_signature(&board);
         increment_position(&mut board, h);
         layers.pop_front();
         let omoves = gen_moves(&mut board);
@@ -1002,7 +1023,7 @@ fn main() {
             println!("Threefold repitition, draw.");
             break;
         }
-        let h = hash_board(&board);
+        let h = get_signature(&board);
         increment_position(&mut board, h);
         layers.pop_front();
     }
