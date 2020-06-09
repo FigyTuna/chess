@@ -82,6 +82,12 @@ const ENGINE_INFO: bool = false;
 
 // Constants
 
+const PAWN_VALUE: i64 = 1;
+const BISHOP_VALUE: i64 = 3;
+const KNIGHT_VALUE: i64 = 3;
+const ROOK_VALUE: i64 = 5;
+const QUEEN_VALUE: i64 = 9;
+
 const CASTLE_WHITE: usize = 0;
 const CASTLE_BLACK: usize = 2;
 const KING_SIDE_CASTLE: usize = 0;
@@ -322,43 +328,59 @@ fn add_if_no_check(board: &mut Board, moves: &mut Vec<Move>, m: Move) -> () {
 
 // Move Generation
 
-fn gen_moves(board: &mut Board) -> Box<Vec<Move>> {
+fn gen_moves(board: &mut Board) -> (Box<Vec<Move>>, Box<[[(Vec<PieceType>,Vec<PieceType>);8];8]>) {
     let mut moves = Box::new(Vec::new());
+    let mut ad = Box::new([
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())]
+    ]);
     for pos in &board.pieces.get(&Piece{piece_type: PieceType::Rook, team: board.to_move}).expect("Error: pieces access").clone() {
         for dir in ([(-1, 0), (1, 0), (0, -1), (0, 1)] as [(i32, i32); 4]).iter() {
-            gen_line_moves(board, &mut moves, pos, *dir, PieceType::Rook);
+            gen_line_moves(board, &mut moves, &mut ad, pos, *dir, PieceType::Rook);
         }
     }
     for pos in &board.pieces.get(&Piece{piece_type: PieceType::Bishop, team: board.to_move}).expect("Error: pieces access").clone() {
         for dir in ([(-1, -1), (1, -1), (-1, 1), (1, 1)] as [(i32, i32); 4]).iter() {
-            gen_line_moves(board, &mut moves, pos, *dir, PieceType::Bishop);
+            gen_line_moves(board, &mut moves, &mut ad, pos, *dir, PieceType::Bishop);
         }
     }
     for pos in &board.pieces.get(&Piece{piece_type: PieceType::Queen, team: board.to_move}).expect("Error: pieces access").clone() {
         for dir in ([(-1, -1), (1, -1), (-1, 1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)] as [(i32, i32); 8]).iter() {
-            gen_line_moves(board, &mut moves, pos, *dir, PieceType::Queen);
+            gen_line_moves(board, &mut moves, &mut ad, pos, *dir, PieceType::Queen);
         }
     }
     for pos in &board.pieces.get(&Piece{piece_type: PieceType::King, team: board.to_move}).expect("Error: pieces access").clone() {
         for dir in ([(-1, -1), (1, -1), (-1, 1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)] as [(i32, i32); 8]).iter() {
-            gen_line_moves(board, &mut moves, pos, *dir, PieceType::King);
+            gen_line_moves(board, &mut moves, &mut ad, pos, *dir, PieceType::King);
         }
     }
     for pos in &board.pieces.get(&Piece{piece_type: PieceType::Knight, team: board.to_move}).expect("Error: pieces access").clone() {
-        gen_knight_moves(board, &mut moves, pos);
+        gen_knight_moves(board, &mut moves, &mut ad, pos);
     }
     for pos in &board.pieces.get(&Piece{piece_type: PieceType::Pawn, team: board.to_move}).expect("Error: pieces access").clone() {
-        gen_pawn_moves(board, &mut moves, pos);
+        gen_pawn_moves(board, &mut moves, &mut ad, pos);
     }
     gen_castle_moves(board, &mut moves);
-    moves
+    (moves, ad)
 }
 
-fn gen_knight_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos) -> () {
+fn gen_knight_moves(board: &mut Board, moves: &mut Vec<Move>, ad: &mut [[(Vec<PieceType>,Vec<PieceType>);8];8], pos: &Pos) -> () {
     for (x, y) in [(-1, -2), (-2, -1), (1, -2), (-2, 1), (-1, 2), (2, -1), (1, 2), (2, 1)].iter() {
         if pos.0 as i32 + x >= 0 && pos.0 as i32 + x <= 7 && pos.1 as i32 + y >= 0 && pos.1 as i32 + y <= 7 {
             let p0 = (pos.0 as i32 + x) as usize;
             let p1 = (pos.1 as i32 + y) as usize;
+            if board.to_move {
+                ad[p0][p1].0.push(PieceType::Knight);
+            }
+            else {
+                ad[p0][p1].1.push(PieceType::Knight);
+            };
             match &board.board[p0][p1] {
                 Some(piece) if board.to_move != piece.team => {
                     let m = basic_move(board, Piece{piece_type: PieceType::Knight, team: board.to_move}, pos, &Pos(p0, p1), Some(*piece));
@@ -373,7 +395,7 @@ fn gen_knight_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos) -> () {
     }
 }
 
-fn gen_pawn_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos) -> () {
+fn gen_pawn_moves(board: &mut Board, moves: &mut Vec<Move>, ad: &mut [[(Vec<PieceType>,Vec<PieceType>);8];8], pos: &Pos) -> () {
     let dir: i32 = if board.to_move {1} else {-1};
     let one_dir = (pos.0 as i32 + dir) as usize;
     let one_space = match board.board[one_dir][pos.1] {
@@ -407,6 +429,12 @@ fn gen_pawn_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos) -> () {
         }
     };
     if pos.1 > 0 {
+        if board.to_move {
+            ad[one_dir][pos.1 - 1].0.push(PieceType::Pawn);
+        }
+        else {
+            ad[one_dir][pos.1 - 1].1.push(PieceType::Pawn);
+        };
         match board.board[one_dir][pos.1 - 1] {
             Some(piece) if board.to_move != piece.team => {
                 if one_dir == 0 || one_dir == 7 {
@@ -439,6 +467,12 @@ fn gen_pawn_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos) -> () {
         }
     };
     if pos.1 < 7 {
+        if board.to_move {
+            ad[one_dir][pos.1 + 1].0.push(PieceType::Pawn);
+        }
+        else {
+            ad[one_dir][pos.1 + 1].1.push(PieceType::Pawn);
+        };
         match board.board[one_dir][pos.1 + 1] {
             Some(piece) if board.to_move != piece.team => {
                 if one_dir == 0 || one_dir == 7 {
@@ -516,7 +550,7 @@ fn gen_castle_moves(board: &mut Board, moves: &mut Vec<Move>) -> () {
     }
 }
 
-fn gen_line_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos, (r_dir, f_dir): (i32, i32), piece_type: PieceType) -> () {
+fn gen_line_moves(board: &mut Board, moves: &mut Vec<Move>, ad: &mut [[(Vec<PieceType>,Vec<PieceType>);8];8], pos: &Pos, (r_dir, f_dir): (i32, i32), piece_type: PieceType) -> () {
     fn extend_dir((r, f): (i32, i32)) -> (i32, i32) {
         let rp = if r > 0 {r + 1} else if r < 0 {r - 1} else {r};
         let fp = if f > 0 {f + 1} else if f < 0 {f - 1} else {f};
@@ -527,11 +561,17 @@ fn gen_line_moves(board: &mut Board, moves: &mut Vec<Move>, pos: &Pos, (r_dir, f
     if r >= 0 && r <= 7 && f >= 0 && f <= 7 {
         let ru = r as usize;
         let fu = f as usize;
+        if board.to_move {
+            ad[ru][fu].0.push(piece_type);
+        }
+        else {
+            ad[ru][fu].1.push(piece_type);
+        };
         match &board.board[ru][fu] {
             None => {
                 add_if_no_check(board, moves, basic_move(board, Piece{piece_type: piece_type, team: board.to_move}, pos, &Pos(ru, fu), None));
                 if piece_type != PieceType::King {
-                    gen_line_moves(board, moves, pos, extend_dir((r_dir, f_dir)), piece_type);
+                    gen_line_moves(board, moves, ad, pos, extend_dir((r_dir, f_dir)), piece_type);
                 }
             },
             Some(piece) if board.to_move != piece.team => {
@@ -613,9 +653,20 @@ fn join_ratings (raw_rating: &Rating, sub_rating: &Rating) -> Rating {
     }
 }
 
+fn get_value(p: &Piece) -> i64 {
+    match p {
+        Piece{piece_type: PieceType::Pawn, team: t} => PAWN_VALUE * if *t {1} else {-1},
+        Piece{piece_type: PieceType::Bishop, team: t} => BISHOP_VALUE * if *t {1} else {-1},
+        Piece{piece_type: PieceType::Knight, team: t} => KNIGHT_VALUE * if *t {1} else {-1},
+        Piece{piece_type: PieceType::Rook, team: t} => ROOK_VALUE * if *t {1} else {-1},
+        Piece{piece_type: PieceType::Queen, team: t} => QUEEN_VALUE * if *t {1} else {-1},
+        Piece{piece_type: PieceType::King, team: t} => 999999 * if *t {1} else {-1},
+    }
+}
+
 fn evaluate_board(board: &mut Board) -> (Rating, Box<Vec<Move>>) {
     if ENGINE_INFO { board.info_eval_count += 1 };
-    let moves = gen_moves(board);
+    let (moves, ad) = gen_moves(board);
     let rating = if moves.len() < 1 {
         if is_in_check(board, board.to_move) {
             Rating::Checkmate{score: !board.to_move, turns: 0}
@@ -626,16 +677,48 @@ fn evaluate_board(board: &mut Board) -> (Rating, Box<Vec<Move>>) {
     }
     else {
         let mut ret = 0;
-        ret += 1 * board.pieces[&Piece{piece_type: PieceType::Pawn, team: true}].len() as i64;
-        ret += -1 * board.pieces[&Piece{piece_type: PieceType::Pawn, team: false}].len() as i64;
-        ret += 3 * board.pieces[&Piece{piece_type: PieceType::Knight, team: true}].len() as i64;
-        ret += -3 * board.pieces[&Piece{piece_type: PieceType::Knight, team: false}].len() as i64;
-        ret += 3 * board.pieces[&Piece{piece_type: PieceType::Bishop, team: true}].len() as i64;
-        ret += -3 * board.pieces[&Piece{piece_type: PieceType::Bishop, team: false}].len() as i64;
-        ret += 5 * board.pieces[&Piece{piece_type: PieceType::Rook, team: true}].len() as i64;
-        ret += -5 * board.pieces[&Piece{piece_type: PieceType::Rook, team: false}].len() as i64;
-        ret += 9 * board.pieces[&Piece{piece_type: PieceType::Queen, team: true}].len() as i64;
-        ret += -9 * board.pieces[&Piece{piece_type: PieceType::Queen, team: false}].len() as i64;
+        for r in ad.iter().zip(board.board.iter()) {
+            for ((w,b), po) in r.0.iter().zip(r.1.iter()) {
+                if w.len() > 0 {
+                    ret += 1;
+                }
+                if b.len() > 0 {
+                    ret -= 1;
+                }
+                ret += w.len() as i64;
+                ret -= b.len() as i64;
+                match po {
+                    Some(p) => {
+                        let value = get_value(p) * 100;
+                        ret += value;
+                        if p.team != board.to_move {
+                            let a_check = if board.to_move {w} else {b};
+                            if a_check.len() > 0 {
+                                let mut a = a_check.iter().map(|x| 100 * get_value(&Piece{piece_type:*x, team: board.to_move})).collect::<Vec<_>>();
+                                let mut d = if board.to_move {b} else {w}.iter().map(|x| 100 * get_value(&Piece{piece_type:*x, team: !board.to_move})).collect::<Vec<_>>();
+                                a.sort_unstable();
+                                d.sort_unstable();
+                                if board.to_move {
+                                    a.reverse();
+                                }
+                                else {
+                                    d.reverse();
+                                }
+                                fn quick_simulate(a: &mut Vec<i64>, d: &mut Vec<i64>, t: i64) -> i64 {
+                                    match (a.pop(), d.pop()) {
+                                        (Some(_), None) => -t,
+                                        (Some(av), Some(dv)) if av.abs() <= t.abs() || (a.len() > 0 && dv <= av) => -t + quick_simulate(d, a, av),
+                                        _ => 0
+                                    }
+                                };
+                                ret += quick_simulate(&mut a, &mut d, value);
+                            }
+                        }
+                    }
+                    _ => ()
+                }
+            }
+        };
         Rating::Evaluation{score: ret}
     };
     (rating, moves)
@@ -948,7 +1031,7 @@ fn main() {
     increment_position(&mut board, h);
     print_board(&board);
     loop {
-        let moves = gen_moves(&mut board);
+        let moves = gen_moves(&mut board).0;
         let m;
         if moves.len() < 1 {
             if is_in_check(&board, true) {
@@ -987,7 +1070,7 @@ fn main() {
         let h = get_signature(&board);
         increment_position(&mut board, h);
         layers.pop_front();
-        let omoves = gen_moves(&mut board);
+        let omoves = gen_moves(&mut board).0;
         let m;
         if omoves.len() < 1 {
             if is_in_check(&board, false) {
